@@ -2,20 +2,20 @@ import time, hmac, hashlib, base64, json, uuid, math, requests
 from dataclasses import dataclass
 
 # ================== CONFIG ==================
-API_KEY = "bg_aef3f1fd1131d53a300900a583720bfb"
-API_SECRET = "c4d69f7e3122eb858b45c9f2a7a30540e7e84597cae3103d3b189d9556b70da7"
+API_KEY = "bg_9c5a0c1c2daa44672ce8fd5c6ace99ea"
+API_SECRET = "a48dec900fd1f907932befe3a766153f5f4c0b55925c8c69ab3905acca365a9f"
 API_PASSPHRASE = "12345678"
 
 BASE_URL = "https://api.bitget.com"
 
-SYMBOL = "SOLUSDT"      # đổi sang SOL spot symbol trên Bitget
-INVEST_USDT = 27.0      # vốn 27 đô
+SYMBOL = "SOLUSDT"      # Trade SOL spot
+INVEST_USDT = 26.0      # Vốn bot
 
-GRIDS = 6               # vốn 27 thì 5-7 grid aggressive là ổn; giữ 6 cho cân
-RANGE_PCT = 0.03        # auto range ±3% quanh giá hiện tại
+GRIDS = 4               # tối ưu cho vốn 26$
+RANGE_PCT = 0.05        # ±5% để size BUY luôn đủ lớn
 
 SLEEP_SEC = 5
-HEARTBEAT_SEC = 10      # mỗi 10s in 1 dòng alive
+HEARTBEAT_SEC = 10
 LOCALE = "en-US"
 # ============================================
 
@@ -160,13 +160,11 @@ def main():
     last = get_last_price(SYMBOL)
     print("Current price:", last)
 
-    # ===== AUTO RANGE aggressive quanh giá hiện tại =====
     lower = last * (1 - RANGE_PCT)
     upper = last * (1 + RANGE_PCT)
     lower = round_step(lower, cfg["price_step"], cfg["price_scale"])
     upper = round_step(upper, cfg["price_step"], cfg["price_scale"])
     print(f"Auto range: {lower} -> {upper} | grids={GRIDS}")
-    # ===================================================
 
     levels, raw_step = build_grid(lower, upper, GRIDS, cfg)
     print("Grid levels:", [lv.price for lv in levels])
@@ -229,7 +227,6 @@ def main():
                             buy_lv.buy_oid = oid
                             print(f"SELL filled @ {lv.price} -> BUY {buy_size} @ {buy_lv.price}, oid={oid}")
 
-            # heartbeat cho biết bot còn sống
             if time.time() - last_heartbeat >= HEARTBEAT_SEC:
                 cur = get_last_price(SYMBOL)
                 print(f"[alive] bot running | price now = {cur}")
