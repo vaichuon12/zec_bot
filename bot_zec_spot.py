@@ -8,14 +8,14 @@ API_PASSPHRASE = "12345678"
 
 BASE_URL = "https://api.bitget.com"
 
-SYMBOL = "ZECUSDT"      # spot symbol Bitget
-INVEST_USDT = 16.0
+SYMBOL = "SOLUSDT"      # đổi sang SOL spot symbol trên Bitget
+INVEST_USDT = 27.0      # vốn 27 đô
 
-GRIDS = 6              # vốn 16 thì 4-6 aggressive là hợp lý
-RANGE_PCT = 0.03       # auto range ±3% quanh giá hiện tại
+GRIDS = 6               # vốn 27 thì 5-7 grid aggressive là ổn; giữ 6 cho cân
+RANGE_PCT = 0.03        # auto range ±3% quanh giá hiện tại
 
 SLEEP_SEC = 5
-HEARTBEAT_SEC = 10     # mỗi 10s in 1 dòng alive
+HEARTBEAT_SEC = 10      # mỗi 10s in 1 dòng alive
 LOCALE = "en-US"
 # ============================================
 
