@@ -1,23 +1,64 @@
 import time, hmac, hashlib, base64, json, uuid, math, requests
 from dataclasses import dataclass
 
-# ================== CONFIG ==================
+# ================== TELEGRAM CONFIG ==================
+TG_TOKEN = "8585897680:AAEimK1ZpJloMUPJgiDN9In-Ujw34obe0Lk"   # <-- THAY VÀO
+TG_CHAT_ID = "5888854189"        # <-- THAY VÀO
+
+def tg_send(msg):
+    print("[TELEGRAM]", msg)
+    try:
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        data = {"chat_id": TG_CHAT_ID, "text": msg}
+        requests.post(url, data=data, timeout=5)
+    except Exception as e:
+        print("Telegram error:", e)
+
+
+# ================== BITGET CONFIG =====================
 API_KEY = "bg_9c5a0c1c2daa44672ce8fd5c6ace99ea"
 API_SECRET = "a48dec900fd1f907932befe3a766153f5f4c0b55925c8c69ab3905acca365a9f"
 API_PASSPHRASE = "12345678"
 
 BASE_URL = "https://api.bitget.com"
 
-SYMBOL = "SOLUSDT"      # Trade SOL spot
-INVEST_USDT = 26.0      # Vốn bot
+SYMBOL = "SOLUSDT"
+INVEST_USDT = 26.0
 
-GRIDS = 4               # tối ưu cho vốn 26$
-RANGE_PCT = 0.05        # ±5% để size BUY luôn đủ lớn
+GRIDS = 3
+RANGE_PCT = 0.06
+AUTO_RERANGE_TRIGGER = 0.05
 
 SLEEP_SEC = 5
-HEARTBEAT_SEC = 10
+HEARTBEAT_SEC = 15
 LOCALE = "en-US"
-# ============================================
+# =======================================================
+
+
+# ================== PROFIT TRACKING ====================
+daily_profit = 0.0
+hourly_profit = 0.0
+minute_profit = 0.0
+
+total_profit = 0.0
+
+daily_buy_count = 0
+daily_sell_count = 0
+hourly_buy_count = 0
+hourly_sell_count = 0
+minute_buy_count = 0
+minute_sell_count = 0
+
+daily_grid_rounds = 0
+hourly_grid_rounds = 0
+minute_grid_rounds = 0
+
+last_report_day = None
+last_report_hour = None
+last_report_time = time.time()
+
+REPORT_INTERVAL = 300   # 5 phút
+# =======================================================
 
 
 @dataclass
@@ -31,8 +72,8 @@ def ts_ms():
     return str(int(time.time() * 1000))
 
 
-def sign_request(timestamp, method, request_path, body=""):
-    prehash = f"{timestamp}{method.upper()}{request_path}{body}"
+def sign_request(timestamp, method, path, body=""):
+    prehash = f"{timestamp}{method.upper()}{path}{body}"
     mac = hmac.new(API_SECRET.encode(), prehash.encode(), hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
 
@@ -50,33 +91,28 @@ def make_headers(method, path, body=""):
     }
 
 
+# ============== FIX JSON SAFE PARSING ==================
 def get_symbol_config(symbol):
-    path = "/api/v2/spot/public/symbols"
-    url = BASE_URL + path
+    print("Fetching symbol config…")
+    url = BASE_URL + "/api/v2/spot/public/symbols"
     r = requests.get(url, timeout=10)
     r.raise_for_status()
-    res = r.json()
-    if res.get("code") != "00000":
-        raise RuntimeError(res)
+    data = r.json()
 
-    items = res["data"]
-    cfg = next((x for x in items if x.get("symbol") == symbol), None)
+    cfg = next((x for x in data["data"] if x["symbol"] == symbol), None)
     if not cfg:
-        raise RuntimeError(f"Symbol {symbol} not found in config")
+        raise RuntimeError("Symbol not found")
 
-    price_scale = int(cfg.get("priceScale", cfg.get("pricePrecision", 6)))
-    qty_scale   = int(cfg.get("quantityScale", cfg.get("quantityPrecision", 6)))
+    price_scale = int(cfg.get("priceScale") or cfg.get("pricePrecision") or 6)
+    qty_scale = int(cfg.get("quantityScale") or cfg.get("quantityPrecision") or 6)
 
-    price_step = float(cfg.get("priceStep", 10 ** (-price_scale)))
-    qty_step   = float(cfg.get("quantityStep", 10 ** (-qty_scale)))
+    price_step = float(cfg.get("priceStep") or (10 ** (-price_scale)))
+    qty_step = float(cfg.get("quantityStep") or (10 ** (-qty_scale)))
 
-    min_quote = float(
-        cfg.get("minTradeUSDT")
-        or cfg.get("minTradeAmount")
-        or cfg.get("minTradeQuote")
-        or 1.0
-    )
-    min_base = float(cfg.get("minTradeSize", cfg.get("minTradeBase", 0.0)) or 0.0)
+    min_quote = float(cfg.get("minTradeUSDT") or 1.0)
+    min_base = float(cfg.get("minTradeSize") or 0.0)
+
+    print("Config loaded:", cfg)
 
     return {
         "price_scale": price_scale,
@@ -86,157 +122,258 @@ def get_symbol_config(symbol):
         "min_quote": min_quote,
         "min_base": min_base
     }
+# =======================================================
 
 
 def round_step(x, step, scale):
-    if step <= 0:
-        return round(x, scale)
     return round(math.floor(x / step) * step, scale)
 
 
 def get_last_price(symbol):
-    path = f"/api/v2/spot/market/tickers?symbol={symbol}"
-    url = BASE_URL + path
-    r = requests.get(url, timeout=10)
+    url = f"{BASE_URL}/api/v2/spot/market/tickers?symbol={symbol}"
+    r = requests.get(url)
     r.raise_for_status()
-    res = r.json()
-    if res.get("code") != "00000":
-        raise RuntimeError(res)
-    return float(res["data"][0]["lastPr"])
+    price = float(r.json()["data"][0]["lastPr"])
+    print("Price now:", price)
+    return price
 
 
 def place_limit(symbol, side, price, size):
+    print(f"Placing {side.upper()} {size} @ {price}")
+    tg_send(f"📌 Placing {side.upper()} {size} SOL @ {price}")
+
     path = "/api/v2/spot/trade/place-order"
-    url = BASE_URL + path
-    body_dict = {
+    body = json.dumps({
         "symbol": symbol,
         "side": side,
         "orderType": "limit",
         "force": "gtc",
         "price": str(price),
         "size": str(size),
-        "clientOid": str(uuid.uuid4()),
-    }
-    body = json.dumps(body_dict)
-    r = requests.post(url, headers=make_headers("POST", path, body), data=body, timeout=10)
+        "clientOid": str(uuid.uuid4())
+    })
+
+    r = requests.post(BASE_URL + path, headers=make_headers("POST", path, body), data=body)
+    print("Response:", r.text)
     r.raise_for_status()
-    res = r.json()
-    if res.get("code") != "00000":
-        raise RuntimeError(res)
-    return res["data"]["orderId"]
+
+    oid = r.json()["data"]["orderId"]
+    print("Order ID:", oid)
+    return oid
 
 
 def get_order(order_id):
     path = f"/api/v2/spot/trade/orderInfo?orderId={order_id}"
-    url = BASE_URL + path
-    r = requests.get(url, headers=make_headers("GET", path), timeout=10)
+    r = requests.get(BASE_URL + path, headers=make_headers("GET", path))
     r.raise_for_status()
-    res = r.json()
-    if res.get("code") != "00000":
-        raise RuntimeError(res)
+    data = r.json()["data"]
+    return data[0] if isinstance(data, list) else data
 
-    data = res["data"]
-    if isinstance(data, list):
-        if not data:
-            raise RuntimeError("orderInfo returned empty list")
-        data = data[0]
-    return data
+
+def cancel_order(order_id):
+    print("Cancel order:", order_id)
+    try:
+        path = "/api/v2/spot/trade/cancel-order"
+        body = json.dumps({"orderId": order_id, "symbol": SYMBOL})
+        requests.post(BASE_URL + path, headers=make_headers("POST", path, body), data=body)
+    except:
+        pass
+
+
+def cancel_all(levels):
+    print("Canceling all pending orders…")
+    for lv in levels:
+        if lv.buy_oid: cancel_order(lv.buy_oid)
+        if lv.sell_oid: cancel_order(lv.sell_oid)
+    tg_send("⚠️ All pending orders canceled.")
 
 
 def build_grid(lower, upper, n, cfg):
     step = (upper - lower) / n
-    levels = []
-    for i in range(n + 1):
-        p = lower + step * i
-        p = round_step(p, cfg["price_step"], cfg["price_scale"])
-        levels.append(GridLevel(price=p))
-    return levels, step
+    lv = [GridLevel(price=round_step(lower + step * i, cfg["price_step"], cfg["price_scale"])) for i in range(n + 1)]
+    print("Grid levels:", [x.price for x in lv])
+    return lv
+
+
+def setup_grid(cfg):
+    cur = get_last_price(SYMBOL)
+
+    lower = round_step(cur * (1 - RANGE_PCT), cfg["price_step"], cfg["price_scale"])
+    upper = round_step(cur * (1 + RANGE_PCT), cfg["price_step"], cfg["price_scale"])
+
+    tg_send(f"🔄 New Grid: {lower} → {upper}")
+    print("New grid:", lower, "→", upper)
+
+    levels = build_grid(lower, upper, GRIDS, cfg)
+    buy_levels = [lv for lv in levels if lv.price < cur]
+
+    usdt_each = INVEST_USDT / len(buy_levels)
+
+    for lv in buy_levels:
+        size = round_step(usdt_each / lv.price, cfg["qty_step"], cfg["qty_scale"])
+
+        if size < cfg["min_base"]:
+            print("Skip BUY: size too small")
+            tg_send(f"⚠️ Skip BUY @ {lv.price}: size too small")
+            continue
+
+        lv.buy_oid = place_limit(SYMBOL, "buy", lv.price, size)
+
+    return levels, lower, upper
 
 
 def main():
+    global daily_profit, hourly_profit, minute_profit
+    global daily_buy_count, hourly_buy_count, minute_buy_count
+    global daily_sell_count, hourly_sell_count, minute_sell_count
+    global daily_grid_rounds, hourly_grid_rounds, minute_grid_rounds
+    global total_profit, last_report_day, last_report_hour, last_report_time
+
+    tg_send("🚀 BOT GRID SOLUSDT STARTED")
+    print("BOT STARTED")
+
     cfg = get_symbol_config(SYMBOL)
-    print("Symbol config:", cfg)
-
-    last = get_last_price(SYMBOL)
-    print("Current price:", last)
-
-    lower = last * (1 - RANGE_PCT)
-    upper = last * (1 + RANGE_PCT)
-    lower = round_step(lower, cfg["price_step"], cfg["price_scale"])
-    upper = round_step(upper, cfg["price_step"], cfg["price_scale"])
-    print(f"Auto range: {lower} -> {upper} | grids={GRIDS}")
-
-    levels, raw_step = build_grid(lower, upper, GRIDS, cfg)
-    print("Grid levels:", [lv.price for lv in levels])
-
-    buy_levels = [lv for lv in levels if lv.price < last]
-    if not buy_levels:
-        print("Price <= lower, no initial buys. Stop.")
-        return
-
-    usdt_per_buy = INVEST_USDT / len(buy_levels)
-    print("USDT per buy:", usdt_per_buy)
-
-    for lv in buy_levels:
-        size = usdt_per_buy / lv.price
-        size = round_step(size, cfg["qty_step"], cfg["qty_scale"])
-
-        if usdt_per_buy < cfg["min_quote"] or (cfg["min_base"] and size < cfg["min_base"]):
-            print(f"Skip BUY @ {lv.price}: below min")
-            continue
-
-        oid = place_limit(SYMBOL, "buy", lv.price, size)
-        lv.buy_oid = oid
-        print(f"Placed BUY {size} @ {lv.price}, oid={oid}")
+    levels, lower, upper = setup_grid(cfg)
 
     last_heartbeat = time.time()
 
     while True:
         try:
+            cur = get_last_price(SYMBOL)
+
+            # ===== AUTO RERANGE =====
+            if cur > upper * 1.05 or cur < lower * 0.95:
+                tg_send("⚠️ Price left range → Reset Grid")
+                cancel_all(levels)
+                levels, lower, upper = setup_grid(cfg)
+                continue
+
+            # ===== GRID LOGIC =====
             for i, lv in enumerate(levels):
 
+                # BUY filled
                 if lv.buy_oid:
                     info = get_order(lv.buy_oid)
-                    if info.get("status") == "filled":
-                        filled_base = float(info["baseVolume"])
+                    if info["status"] == "filled":
                         lv.buy_oid = ""
+                        amount = float(info["baseVolume"])
 
+                        tg_send(f"🟢 BUY filled @ {lv.price}")
+                        print(f"BUY filled @ {lv.price}")
+
+                        # track
+                        daily_buy_count += 1
+                        hourly_buy_count += 1
+                        minute_buy_count += 1
+
+                        # place SELL
                         if i + 1 < len(levels):
                             sell_lv = levels[i + 1]
-                            sell_size = round_step(filled_base, cfg["qty_step"], cfg["qty_scale"])
-                            oid = place_limit(SYMBOL, "sell", sell_lv.price, sell_size)
-                            sell_lv.sell_oid = oid
-                            print(f"BUY filled @ {lv.price} -> SELL {sell_size} @ {sell_lv.price}, oid={oid}")
+                            sell_size = round_step(amount, cfg["qty_step"], cfg["qty_scale"])
+                            sell_lv.sell_oid = place_limit(SYMBOL, "sell", sell_lv.price, sell_size)
 
+                # SELL filled
                 if lv.sell_oid:
                     info = get_order(lv.sell_oid)
-                    if info.get("status") == "filled":
-                        filled_quote = float(info["quoteVolume"])
+                    if info["status"] == "filled":
                         lv.sell_oid = ""
+                        quote = float(info["quoteVolume"])
 
+                        tg_send(f"🔴 SELL filled @ {lv.price}")
+                        print(f"SELL filled @ {lv.price}")
+
+                        # ====== TÍNH PROFIT ======
+                        buy_price = levels[i - 1].price
+                        sell_price = lv.price
+                        profit = (sell_price - buy_price) * (quote / sell_price)
+
+                        daily_profit += profit
+                        hourly_profit += profit
+                        minute_profit += profit
+                        total_profit += profit
+
+                        daily_sell_count += 1
+                        hourly_sell_count += 1
+                        minute_sell_count += 1
+
+                        daily_grid_rounds += 1
+                        hourly_grid_rounds += 1
+                        minute_grid_rounds += 1
+
+                        # Rebuy lower level
                         if i - 1 >= 0:
                             buy_lv = levels[i - 1]
-                            buy_size = filled_quote / buy_lv.price
-                            buy_size = round_step(buy_size, cfg["qty_step"], cfg["qty_scale"])
+                            size = round_step(quote / buy_lv.price, cfg["qty_step"], cfg["qty_scale"])
+                            if size >= cfg["min_base"]:
+                                buy_lv.buy_oid = place_limit(SYMBOL, "buy", buy_lv.price, size)
 
-                            if filled_quote < cfg["min_quote"] or (cfg["min_base"] and buy_size < cfg["min_base"]):
-                                print(f"Skip reBUY @ {buy_lv.price}: below min")
-                                continue
-
-                            oid = place_limit(SYMBOL, "buy", buy_lv.price, buy_size)
-                            buy_lv.buy_oid = oid
-                            print(f"SELL filled @ {lv.price} -> BUY {buy_size} @ {buy_lv.price}, oid={oid}")
-
-            if time.time() - last_heartbeat >= HEARTBEAT_SEC:
-                cur = get_last_price(SYMBOL)
-                print(f"[alive] bot running | price now = {cur}")
+            # ===== HEARTBEAT =====
+            if time.time() - last_heartbeat > HEARTBEAT_SEC:
+                tg_send(f"❤️ Alive | Price = {cur}")
                 last_heartbeat = time.time()
+
+            # ===== DAILY REPORT =====
+            current_day = time.strftime("%Y-%m-%d")
+            if last_report_day != current_day:
+                if last_report_day is not None:
+                    tg_send(
+                        f"📊 DAILY REPORT\n"
+                        f"Ngày: {last_report_day}\n"
+                        f"Buy filled: {daily_buy_count}\n"
+                        f"Sell filled: {daily_sell_count}\n"
+                        f"Grid rounds: {daily_grid_rounds}\n"
+                        f"Lợi nhuận hôm nay: {daily_profit:.4f} USDT\n"
+                        f"Lũy kế: {total_profit:.4f} USDT"
+                    )
+
+                daily_profit = 0.0
+                daily_buy_count = 0
+                daily_sell_count = 0
+                daily_grid_rounds = 0
+                last_report_day = current_day
+
+            # ===== HOURLY REPORT =====
+            current_hour = time.strftime("%H")
+            if last_report_hour != current_hour:
+                if last_report_hour is not None:
+                    tg_send(
+                        f"⏱ HOURLY REPORT\n"
+                        f"Giờ: {last_report_hour}:00\n"
+                        f"Buy: {hourly_buy_count} | Sell: {hourly_sell_count}\n"
+                        f"Grid rounds: {hourly_grid_rounds}\n"
+                        f"Lợi nhuận giờ: {hourly_profit:.4f} USDT\n"
+                        f"Lũy kế: {total_profit:.4f} USDT"
+                    )
+
+                hourly_profit = 0.0
+                hourly_buy_count = 0
+                hourly_sell_count = 0
+                hourly_grid_rounds = 0
+                last_report_hour = current_hour
+
+            # ===== 5-MIN REPORT =====
+            now = time.time()
+            if now - last_report_time >= REPORT_INTERVAL:
+                tg_send(
+                    f"⏱ 5-MIN REPORT\n"
+                    f"Buy: {minute_buy_count} | Sell: {minute_sell_count}\n"
+                    f"Grid rounds: {minute_grid_rounds}\n"
+                    f"Lợi nhuận 5 phút: {minute_profit:.4f} USDT\n"
+                    f"Lũy kế: {total_profit:.4f} USDT"
+                )
+
+                minute_profit = 0.0
+                minute_buy_count = 0
+                minute_sell_count = 0
+                minute_grid_rounds = 0
+                last_report_time = now
 
             time.sleep(SLEEP_SEC)
 
         except Exception as e:
-            print("Loop error:", e)
-            time.sleep(SLEEP_SEC * 2)
+            print("ERROR:", e)
+            tg_send(f"⚠️ ERROR: {e}")
+            time.sleep(3)
 
 
 if __name__ == "__main__":
