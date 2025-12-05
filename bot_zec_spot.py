@@ -26,8 +26,10 @@ SYMBOL = "SOLUSDT"
 INVEST_USDT = 26.0
 
 GRIDS = 3
-RANGE_PCT = 0.06
-AUTO_RERANGE_TRIGGER = 0.05
+# GRID SIÊU SÁT GIÁ
+RANGE_PCT = 0.01              # ±1% → grid cực sát giá
+BUY_DISTANCE_LIMIT = 0.015     # BUY cách giá tối đa 1%
+AUTO_RERANGE_TRIGGER = 0.01   # lệch 1% reset ngay
 
 SLEEP_SEC = 5
 HEARTBEAT_SEC = 15
@@ -209,15 +211,25 @@ def setup_grid(cfg):
 
     usdt_each = INVEST_USDT / len(buy_levels)
 
+    # ================= ANTI BUY XA =================
     for lv in buy_levels:
+
+        # Không BUY nếu mức giá cách thị trường quá 1%
+        if abs(cur - lv.price) / cur > BUY_DISTANCE_LIMIT:
+            print(f"Skip BUY {lv.price}: quá xa giá thị trường ({cur})")
+            tg_send(f"⚠️ Skip BUY @ {lv.price}: quá xa giá hiện tại")
+            continue
+
         size = round_step(usdt_each / lv.price, cfg["qty_step"], cfg["qty_scale"])
 
         if size < cfg["min_base"]:
             print("Skip BUY: size too small")
-            tg_send(f"⚠️ Skip BUY @ {lv.price}: size too small")
+            tg_send(f"⚠️ Skip BUY @ {lv.price}: size quá nhỏ")
             continue
 
         lv.buy_oid = place_limit(SYMBOL, "buy", lv.price, size)
+
+    # =================================================
 
     return levels, lower, upper
 
@@ -242,7 +254,7 @@ def main():
             cur = get_last_price(SYMBOL)
 
             # ===== AUTO RERANGE =====
-            if cur > upper * 1.05 or cur < lower * 0.95:
+            if cur > upper * 1.015 or cur < lower * 0.985:
                 tg_send("⚠️ Price left range → Reset Grid")
                 cancel_all(levels)
                 levels, lower, upper = setup_grid(cfg)
