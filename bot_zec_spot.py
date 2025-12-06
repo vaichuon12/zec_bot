@@ -22,13 +22,13 @@ API_PASSPHRASE = "12345678"
 
 BASE_URL = "https://api.bitget.com"
 
-SYMBOL = "SOLUSDT"
+SYMBOL = "ZECUSDT"
 INVEST_USDT = 26.0
 
 GRIDS = 3
 # GRID SIÊU SÁT GIÁ
-RANGE_PCT = 0.01              # ±1% → grid cực sát giá
-BUY_DISTANCE_LIMIT = 0.015     # BUY cách giá tối đa 1%
+RANGE_PCT = 0.02     # ±2% cho ZEC             # ±1% → grid cực sát giá
+BUY_DISTANCE_LIMIT = 0.02     # BUY cách giá tối đa 1%
 AUTO_RERANGE_TRIGGER = 0.01   # lệch 1% reset ngay
 
 SLEEP_SEC = 5
